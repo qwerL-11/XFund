@@ -18,12 +18,14 @@ from matplotlib.ticker import PercentFormatter
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QTabWidget, QLabel, QPushButton,
-    QStatusBar, QMenuBar, QMenu, QGroupBox, QGridLayout, QFrame,
+    QMenuBar, QMenu, QGroupBox, QGridLayout, QFrame,
     QSplitter, QMessageBox, QProgressBar, QScrollArea, QSizePolicy,
-    QDialog, QFormLayout, QLineEdit, QDialogButtonBox,
+    QDialog, QFormLayout, QLineEdit, QDialogButtonBox, QInputDialog,
+    QRadioButton, QButtonGroup, QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QAction
+from PySide6.QtCore import Qt, QSize, QThread, Signal, QTimer, QPoint
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 import re
 
 from config.settings import THRESHOLDS
@@ -34,14 +36,13 @@ from src.storage.database import DataStore
 
 # ─── 全局样式表 ───────────────────────────────────────────
 STYLE = """
-QMainWindow { background-color: #f0f2f5; }
-QMenuBar { background-color: #1a1a2e; color: white; padding: 4px; font-size: 13px; }
+QMainWindow { background: transparent; }
+QMenuBar { background-color: #1a1a2e; color: white; padding: 4px; font-size: 13px; border-radius: 0px; }
 QMenuBar::item:selected { background-color: #16213e; }
 QMenu { background-color: #1a1a2e; color: white; border: 1px solid #0f3460; }
 QMenu::item:selected { background-color: #0f3460; }
-QListWidget { background-color: white; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; padding: 4px; }
-QListWidget::item { padding: 10px 8px; border-bottom: 1px solid #eee; }
-QListWidget::item:selected { background-color: #3498db; color: white; border-radius: 4px; }
+QListWidget { background-color: white; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; padding: 1px 1px 1px 0px; outline: none; }
+QListWidget::item { border: none; background: transparent; padding: 0px; margin: 0px; }
 QListWidget::item:hover { background-color: #eef2f7; }
 QTabWidget::pane { background-color: white; border: 1px solid #ddd; border-radius: 6px; }
 QTabBar::tab { background-color: #e8ecf1; padding: 10px 24px; margin-right: 2px; font-size: 13px; border-top-left-radius: 6px; border-top-right-radius: 6px; }
@@ -55,7 +56,6 @@ QGroupBox { font-size: 14px; font-weight: bold; color: #2c3e50; border: 1px soli
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
 QLabel#metricValue { font-size: 22px; font-weight: bold; color: #2c3e50; }
 QLabel#metricLabel { font-size: 12px; color: #7f8c8d; }
-QStatusBar { background-color: #1a1a2e; color: #ccc; font-size: 12px; }
 QProgressBar { border: none; border-radius: 4px; background-color: #e0e0e0; height: 4px; }
 QProgressBar::chunk { background-color: #3498db; border-radius: 4px; }
 """
@@ -75,6 +75,66 @@ matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 
+class DCADialog(QDialog):
+    """定投设置对话框：金额 + 频率"""
+    def __init__(self, current_base: float = 1000, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("同步定投")
+        self.setFixedSize(360, 220)
+        self.setStyleSheet("QDialog { background-color: white; }")
+
+        layout = QFormLayout(self)
+        layout.setSpacing(12)
+
+        self.amount_input = QLineEdit()
+        self.amount_input.setPlaceholderText(f"每期定投金额，如 {current_base:.0f}")
+        self.amount_input.setText(f"{current_base:.0f}")
+        self.amount_input.setStyleSheet("padding: 8px; font-size: 14px; border: 1px solid #ddd; border-radius: 4px;")
+        layout.addRow("定投金额(元):", self.amount_input)
+
+        freq_layout = QHBoxLayout()
+        self.freq_group = QButtonGroup(self)
+        self.radio_daily = QRadioButton("每天")
+        self.radio_weekly = QRadioButton("每周")
+        self.radio_monthly = QRadioButton("每月")
+        self.radio_monthly.setChecked(True)
+        self.freq_group.addButton(self.radio_daily, 0)
+        self.freq_group.addButton(self.radio_weekly, 1)
+        self.freq_group.addButton(self.radio_monthly, 2)
+        freq_layout.addWidget(self.radio_daily)
+        freq_layout.addWidget(self.radio_weekly)
+        freq_layout.addWidget(self.radio_monthly)
+        freq_layout.addStretch()
+        layout.addRow("定投频率:", freq_layout)
+
+        hint = QLabel("定投金额将直接计入持有金额")
+        hint.setStyleSheet("font-size: 11px; color: #95a5a6;")
+        layout.addRow(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确认定投")
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def _on_accept(self):
+        try:
+            amount = float(self.amount_input.text().strip())
+            if amount <= 0:
+                QMessageBox.warning(self, "提示", "定投金额必须大于 0。")
+                return
+        except ValueError:
+            QMessageBox.warning(self, "提示", "请输入有效的定投金额。")
+            return
+        self.accept()
+
+    def get_result(self):
+        """返回 (金额, 频率key)"""
+        freq_map = {0: "daily", 1: "weekly", 2: "monthly"}
+        freq_id = self.freq_group.checkedId()
+        return float(self.amount_input.text().strip()), freq_map.get(freq_id, "monthly")
+
+
 class FetchThread(QThread):
     """后台线程：异步获取基金数据，避免界面卡顿"""
     finished = Signal(str, object)
@@ -91,6 +151,30 @@ class FetchThread(QThread):
             self.finished.emit(self.fund_code, df)
         except Exception as e:
             self.error.emit(self.fund_code, str(e))
+
+
+class SummaryFetchThread(QThread):
+    """后台线程：异步加载账户汇总所需的板块、重仓股数据"""
+    finished = Signal(dict, dict, dict)  # (sector_map, fund_holdings_map, stock_changes)
+
+    def __init__(self, funds: list):
+        super().__init__()
+        self.funds = funds
+
+    def run(self):
+        fetcher = FundFetcher()
+        sector_map = fetcher.get_sector_performance()
+        all_stock_codes = set()
+        fund_holdings_map = {}
+
+        for fund in self.funds:
+            holdings = fetcher.get_fund_holdings(fund["code"])
+            fund_holdings_map[fund["code"]] = holdings
+            for s in holdings.get("stocks", []):
+                all_stock_codes.add(s["code"])
+
+        stock_changes = fetcher.get_stock_daily_change(list(all_stock_codes)) if all_stock_codes else {}
+        self.finished.emit(sector_map, fund_holdings_map, stock_changes)
 
 
 class MplCanvas(FigureCanvas):
@@ -194,14 +278,17 @@ def simplify_fund_name(name: str) -> str:
 
 
 class MainWindow(QMainWindow):
-    """XFund 主窗口"""
+    """XFund 主窗口 — 无边框圆角现代风格"""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("XFund")
         self.resize(1280, 800)
         self.setMinimumSize(960, 640)
-        self.setStyleSheet(STYLE)
+
+        # 无边框 + 透明背景（圆角需要）
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.fetcher = FundFetcher()
         self.analyzer = FundAnalyzer()
@@ -213,50 +300,212 @@ class MainWindow(QMainWindow):
         self.current_summary = None
         self.current_code = None
         self.fetch_thread = None
+        self.summary_thread = None
+        self._summary_loading = False
+        self._drag_pos = None
 
-        self._setup_menu()
         self._setup_ui()
-        self._setup_statusbar()
+        self.setStyleSheet(STYLE)
+
+        # 启动时自动加载账户汇总
+        QTimer.singleShot(300, self._refresh_account_summary)
 
     # ─── 菜单栏 ──────────────────────────────────────────
-    def _setup_menu(self):
-        menubar = self.menuBar()
-
-        file_menu = menubar.addMenu("文件(&F)")
-        add_action = QAction("添加基金...", self)
-        add_action.triggered.connect(self._add_fund)
-        refresh_action = QAction("刷新数据", self)
-        refresh_action.setShortcut("F5")
-        refresh_action.triggered.connect(self._refresh)
-        export_action = QAction("导出数据...", self)
-        export_action.triggered.connect(self._export)
-        exit_action = QAction("退出", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(add_action)
-        file_menu.addAction(refresh_action)
-        file_menu.addSeparator()
-        file_menu.addAction(export_action)
-        file_menu.addSeparator()
-        file_menu.addAction(exit_action)
-
-        settings_menu = menubar.addMenu("设置(&S)")
-        threshold_action = QAction("告警阈值...", self)
-        threshold_action.triggered.connect(self._edit_thresholds)
-        settings_menu.addAction(threshold_action)
-
-        help_menu = menubar.addMenu("帮助(&H)")
-        about_action = QAction("关于 XFund", self)
-        about_action.triggered.connect(self._about)
-        help_menu.addAction(about_action)
-
     # ─── 主界面布局 ──────────────────────────────────────
     def _setup_ui(self):
         central = QWidget()
+        central.setStyleSheet("background: transparent;")
         self.setCentralWidget(central)
 
-        hlayout = QHBoxLayout(central)
-        hlayout.setContentsMargins(12, 12, 12, 12)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+        outer_layout.setSpacing(0)
+
+        # ── 圆角容器（所有内容放这里）──
+        container = QWidget()
+        container.setObjectName("mainContainer")
+        container.setStyleSheet(
+            "#mainContainer {"
+            "  background-color: #f0f2f5;"
+            "  border-radius: 14px;"
+            "}"
+        )
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(30)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 60))
+        container.setGraphicsEffect(shadow)
+
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+
+        # ── 自定义标题栏 ──
+        title_bar = QWidget()
+        title_bar.setFixedHeight(42)
+        title_bar.setStyleSheet(
+            "background: #1a1a2e; border-top-left-radius: 14px; border-top-right-radius: 14px;"
+        )
+        tb_layout = QHBoxLayout(title_bar)
+        tb_layout.setContentsMargins(14, 0, 8, 0)
+
+        logo = QLabel("XFund")
+        logo.setStyleSheet("color: white; font-size: 14px; font-weight: bold; background: transparent;")
+        tb_layout.addWidget(logo)
+
+        # 标题栏菜单按钮
+        menu_btn_style = (
+            "QPushButton { background: transparent; color: #ccc; border: none; "
+            "padding: 6px 14px; font-size: 12px; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.10); color: white; }"
+        )
+
+        def make_menu(text, actions: list):
+            btn = QPushButton(text)
+            btn.setStyleSheet(menu_btn_style)
+            menu = QMenu(btn)
+            menu.setStyleSheet(
+                "QMenu { background: #1a1a2e; color: white; border: 1px solid #0f3460; padding: 4px; }"
+                "QMenu::item { padding: 6px 24px; }"
+                "QMenu::item:selected { background: #0f3460; }"
+            )
+            for label, slot, shortcut in actions:
+                if slot is None:
+                    menu.addSeparator()
+                else:
+                    act = menu.addAction(label)
+                    if shortcut:
+                        act.setShortcut(shortcut)
+                    act.triggered.connect(slot)
+            btn.setMenu(menu)
+            return btn
+
+        file_menu = make_menu("文件", [
+            ("添加基金...", self._add_fund, ""),
+            ("刷新数据", self._refresh, "F5"),
+            ("导出数据...", self._export, ""),
+            ("", None, ""),
+            ("退出", self.close, "Ctrl+Q"),
+        ])
+        tb_layout.addWidget(file_menu)
+
+        settings_menu = make_menu("设置", [
+            ("告警阈值...", self._edit_thresholds, ""),
+        ])
+        tb_layout.addWidget(settings_menu)
+
+        help_menu = make_menu("帮助", [
+            ("关于 XFund", self._about, ""),
+        ])
+        tb_layout.addWidget(help_menu)
+
+        tb_layout.addStretch()
+
+        btn_style = (
+            "QPushButton { background: transparent; color: #ccc; border: none; "
+            "font-size: 16px; padding: 6px 12px; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.15); color: white; }"
+        )
+        btn_min = QPushButton("─")
+        btn_min.setStyleSheet(btn_style)
+        btn_min.clicked.connect(self.showMinimized)
+        tb_layout.addWidget(btn_min)
+
+        btn_max = QPushButton("□")
+        btn_max.setStyleSheet(btn_style)
+        btn_max.clicked.connect(self._toggle_maximize)
+        tb_layout.addWidget(btn_max)
+
+        btn_close = QPushButton("✕")
+        btn_close.setStyleSheet(btn_style + "QPushButton:hover { background: #e74c3c; color: white; }")
+        btn_close.clicked.connect(self.close)
+        tb_layout.addWidget(btn_close)
+
+        # 标题栏拖动
+        title_bar.mousePressEvent = self._title_bar_press
+        title_bar.mouseMoveEvent = self._title_bar_move
+
+        container_layout.addWidget(title_bar)
+
+        # ── 页面内容区 ──
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # ── 顶层页面 Tab ──
+        self.page_tabs = QTabWidget()
+        self.page_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 12px 32px; font-size: 15px; font-weight: bold; }"
+            "QTabBar::tab:selected { color: #3498db; }"
+        )
+
+        # ===== Page 0: 账户汇总 =====
+        summary_page = QWidget()
+        summary_layout = QVBoxLayout(summary_page)
+        summary_layout.setContentsMargins(16, 12, 16, 12)
+        summary_layout.setSpacing(8)
+
+        summary_toolbar = QHBoxLayout()
+        summary_title = QLabel("📊 账户汇总")
+        summary_title.setStyleSheet("font-size: 20px; font-weight: bold; color: #1a1a2e;")
+        summary_toolbar.addWidget(summary_title)
+        summary_toolbar.addStretch()
+
+        refresh_summary_btn = QPushButton("↻ 刷新汇总")
+        refresh_summary_btn.setStyleSheet(
+            "QPushButton { background: #3498db; color: white; border: none; "
+            "padding: 8px 20px; border-radius: 5px; font-size: 13px; }"
+            "QPushButton:hover { background: #2980b9; }"
+        )
+        refresh_summary_btn.clicked.connect(self._refresh_account_summary)
+        summary_toolbar.addWidget(refresh_summary_btn)
+        summary_layout.addLayout(summary_toolbar)
+
+        self.summary_table = QTableWidget()
+        self.summary_table.setColumnCount(9)
+        self.summary_table.setHorizontalHeaderLabels([
+            "基金名称", "持有金额", "持有收益", "持有收益率",
+            "当日收益", "当日收益率", "关联板块", "板块涨幅", "重仓均涨幅",
+        ])
+        self.summary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for c in range(1, 9):
+            self.summary_table.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        self.summary_table.setAlternatingRowColors(True)
+        self.summary_table.setStyleSheet(
+            "QTableWidget { background: white; border: 1px solid #ddd; border-radius: 6px; "
+            "gridline-color: #eee; font-size: 13px; }"
+            "QTableWidget::item { padding: 8px 12px; }"
+            "QHeaderView::section { background: #f0f2f5; padding: 10px 8px; "
+            "font-weight: bold; color: #2c3e50; border: none; border-bottom: 2px solid #ddd; }"
+            "QTableWidget::item:alternate { background: #fafbfc; }"
+        )
+        self.summary_table.verticalHeader().setVisible(False)
+        self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.summary_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        summary_layout.addWidget(self.summary_table)
+
+        total_bar = QHBoxLayout()
+        self.total_amount_label = QLabel("总持仓: —")
+        self.total_amount_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50; padding: 4px 8px;")
+        self.total_profit_label = QLabel("总收益: —")
+        self.total_profit_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px 8px;")
+        self.total_daily_label = QLabel("今日收益: —")
+        self.total_daily_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px 8px;")
+        total_bar.addWidget(self.total_amount_label)
+        total_bar.addWidget(self.total_profit_label)
+        total_bar.addWidget(self.total_daily_label)
+        total_bar.addStretch()
+        summary_hint = QLabel("关联板块根据基金名称推测，仅供参考")
+        summary_hint.setStyleSheet("font-size: 11px; color: #95a5a6;")
+        total_bar.addWidget(summary_hint)
+        summary_layout.addLayout(total_bar)
+
+        self.page_tabs.addTab(summary_page, "📊 账户汇总")
+
+        # ===== Page 1: 自选基金 =====
+        fund_page = QWidget()
+        fund_layout = QHBoxLayout(fund_page)
+        fund_layout.setContentsMargins(12, 12, 12, 12)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -329,7 +578,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
 
-        # --- Tab 1: 净值走势 ---
+        # --- Tab 0: 净值走势 ---
         self.chart_tab = QWidget()
         chart_layout = QVBoxLayout(self.chart_tab)
         chart_layout.setContentsMargins(0, 0, 0, 0)
@@ -419,7 +668,7 @@ class MainWindow(QMainWindow):
         pos_tab_layout.addWidget(edit_group)
 
         # 快捷操作
-        action_group = QGroupBox("⚡ 快捷操作（基于当前数据即时计算）")
+        action_group = QGroupBox("⚡ 快捷操作")
         action_layout = QHBoxLayout(action_group)
         action_layout.setSpacing(12)
 
@@ -548,11 +797,49 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([280, 950])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([220, 1060])
 
-        hlayout.addWidget(splitter)
+        fund_layout.addWidget(splitter)
+        self.page_tabs.addTab(fund_page, "📈 自选基金")
+
+        # 切换到账户汇总时自动刷新
+        self.page_tabs.currentChanged.connect(self._on_page_changed)
+
+        content_layout.addWidget(self.page_tabs)
+
+        # 状态栏移入内容区
+        self.statusbar_widget = QWidget()
+        self.statusbar_widget.setFixedHeight(28)
+        self.statusbar_widget.setStyleSheet("background: #1a1a2e; border-bottom-left-radius: 14px; border-bottom-right-radius: 14px;")
+        sb_layout = QHBoxLayout(self.statusbar_widget)
+        sb_layout.setContentsMargins(14, 0, 14, 0)
+        self.status_time = QLabel("就绪 — 请选择基金后点击「刷新数据」")
+        self.status_time.setStyleSheet("color: #ccc; font-size: 11px; background: transparent;")
+        sb_layout.addWidget(self.status_time)
+        content_layout.addWidget(self.statusbar_widget)
+
+        container_layout.addLayout(content_layout)
+        outer_layout.addWidget(container)
+        self.setStyleSheet(STYLE)
+
+    # ─── 标题栏拖动 ─────────────────────────────────────
+    def _title_bar_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _title_bar_move(self, event):
+        if self._drag_pos is not None and event.buttons() == Qt.MouseButton.LeftButton:
+            delta = event.globalPosition().toPoint() - self._drag_pos
+            self.move(self.pos() + delta)
+            self._drag_pos = event.globalPosition().toPoint()
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
 
     # ─── 绘制空图表（占位） ───────────────────────────────
     def _draw_empty_chart(self, canvas: MplCanvas, message: str):
@@ -564,28 +851,76 @@ class MainWindow(QMainWindow):
         ax.set_yticks([])
         canvas.draw()
 
-    # ─── 状态栏 ──────────────────────────────────────────
-    def _setup_statusbar(self):
-        self.statusbar = QStatusBar()
-        self.setStatusBar(self.statusbar)
-        self.status_time = QLabel("就绪 — 请选择基金后点击「刷新数据」")
-        self.statusbar.addPermanentWidget(self.status_time)
-
     # ─── 基金列表操作 ────────────────────────────────────
+    BADGE_HELD_STYLE = (
+        "QLabel { background: #e74c3c; color: white; border-radius: 3px; "
+        "padding: 3px 8px; font-size: 13px; font-weight: bold; }"
+    )
+
+    # 选中指示器样式（用属性选择器避免影响子控件）
+    SELECTED_STYLE = (
+        "QWidget[selected=\"true\"] { "
+        "background-color: #f0f4fa; border-radius: 6px; }"
+    )
+    UNSELECTED_STYLE = "QWidget[selected=\"true\"] { background: transparent; }"
+
     def _populate_list(self):
         self.fund_list.clear()
+        self._fund_widgets = []
         for fund in self.funds:
             short_name = simplify_fund_name(fund["name"])
-            text = f"{fund['code']}\n{short_name}"
-            item = QListWidgetItem(text)
+            pos = self.store.load_position(fund["code"])
+            shares = pos.get("shares", 0)
+
+            # 构建列表项 widget
+            item_widget = QWidget()
+            item_widget.setMinimumHeight(56)
+            item_widget.setProperty("selected", False)
+            item_widget.setStyleSheet(self.UNSELECTED_STYLE)
+            item_layout = QVBoxLayout(item_widget)
+            item_layout.setContentsMargins(0, 6, 6, 6)
+            item_layout.setSpacing(2)
+
+            top_row = QHBoxLayout()
+            top_row.setSpacing(8)
+            code_label = QLabel(fund["code"])
+            code_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50; background: transparent;")
+            top_row.addWidget(code_label)
+
+            if shares > 0:
+                badge = QLabel("持有")
+                badge.setStyleSheet(self.BADGE_HELD_STYLE)
+                top_row.addWidget(badge)
+
+            top_row.addStretch()
+            item_layout.addLayout(top_row)
+
+            name_label = QLabel(short_name)
+            name_label.setStyleSheet("font-size: 12px; color: #7f8c8d; background: transparent;")
+            item_layout.addWidget(name_label)
+
+            self._fund_widgets.append(item_widget)
+            item = QListWidgetItem()
             item.setData(1, fund["code"])
-            hint = item.sizeHint()
-            hint.setHeight(hint.height() + 12)
-            item.setSizeHint(hint)
+            item.setSizeHint(QSize(0, 56))
             self.fund_list.addItem(item)
+            self.fund_list.setItemWidget(item, item_widget)
+
+        self._update_list_selection(self.fund_list.currentRow())
+
+    def _update_list_selection(self, selected_row: int):
+        """更新列表选中样式，不影响子控件"""
+        for i, w in enumerate(self._fund_widgets):
+            if i == selected_row:
+                w.setProperty("selected", True)
+                w.setStyleSheet(self.SELECTED_STYLE)
+            else:
+                w.setProperty("selected", False)
+                w.setStyleSheet(self.UNSELECTED_STYLE)
 
     def _on_fund_selected(self, row: int):
         """选中基金时自动加载数据"""
+        self._update_list_selection(row)
         if row < 0:
             return
         fund = self.funds[row]
@@ -801,7 +1136,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "输入错误", "请输入有效的数字。")
                 return
 
+        # 保留已有的定投频率配置
+        old_pos = self.store.load_position(code) or {}
+        dca_freq = old_pos.get("dca_freq", None)
+
         pos = {"shares": round(shares, 2), "cost": round(cost, 4), "base_amount": base}
+        if dca_freq:
+            pos["dca_freq"] = dca_freq
         self.store.save_position(code, pos)
 
         # 回填到持仓操作 Tab 显示
@@ -812,6 +1153,9 @@ class MainWindow(QMainWindow):
         self.pos_cost.setText(str(round(cost, 4)))
         self.pos_base.setText(str(base))
         self.pos_status_label.setText(f"✅ 已同步！持有 ¥{amount:,.0f}，收益 ¥{profit:+,.0f}")
+
+        # 刷新左栏持仓标签
+        self._populate_list()
 
         # 刷新建议
         if self.current_summary:
@@ -841,7 +1185,7 @@ class MainWindow(QMainWindow):
         profit = shares * (latest_nav - cost)
 
         self.cur_amount_label.setText(f"¥{amount:,.2f}")
-        color = "#27ae60" if profit >= 0 else "#e74c3c"
+        color = "#e74c3c" if profit >= 0 else "#27ae60"
         self.cur_profit_label.setText(f"¥{profit:+,.2f}")
         self.cur_profit_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {color};")
         self.cur_shares_label.setText(f"{shares:,.2f} 份")
@@ -853,82 +1197,53 @@ class MainWindow(QMainWindow):
         self.edit_base.setText(f"{base:.0f}")
 
     def _sync_add(self):
-        """同步加仓：增加持有金额"""
-        if not self.current_summary:
-            QMessageBox.information(self, "提示", "请先加载基金数据。")
-            return
-        code = self.current_code
-        if not code:
-            return
-        pos_data = self.store.load_position(code)
-        if not pos_data:
-            QMessageBox.information(self, "提示", "请先填写持仓信息并点击「同步到分析」。")
-            return
-
-        from src.strategy.advisor import Position
-        pos = Position(
-            shares=pos_data.get("shares", 0),
-            cost=pos_data.get("cost", 0),
-            base_amount=pos_data.get("base_amount", 1000),
-        )
-        result = self.advisor.evaluate(self.current_summary, pos, None, "")
-
-        # 计算加仓金额：优先用网格信号，否则用金字塔建议
-        add_amount = result.grid_action_amount if (result.grid_signal == "买入" and result.grid_action_amount > 0) else result.suggested_amount
-        if add_amount <= 0 and result.multiplier > 0:
-            add_amount = pos.base_amount * result.multiplier
-        if add_amount <= 0:
-            QMessageBox.information(self, "提示", "当前策略不建议加仓（高估区域或信号不足）。")
+        """同步加仓：直接增加持有金额"""
+        if not self.current_code:
+            QMessageBox.information(self, "提示", "请先在左侧选择一只基金。")
             return
 
         current_amount = float(self.edit_amount.text() or 0)
+
+        add_amount, ok = QInputDialog.getDouble(
+            self, "同步加仓", "请输入加仓金额（元）：",
+            1000, 0, 99999999, 2,
+        )
+        if not ok or add_amount <= 0:
+            return
+
+        current_profit = float(self.edit_profit.text() or 0)
         new_amount = current_amount + add_amount
-        latest_nav = self.current_summary.get("最新净值", 1)
-        # 保持收益不变，更新金额
-        profit = float(self.edit_profit.text() or 0)
+        # 按比例调整收益（新增部分无收益）
         self.edit_amount.setText(f"{new_amount:.2f}")
         self._save_position()
 
         QMessageBox.information(self, "加仓完成",
                                 f"持有金额 ¥{current_amount:,.0f} → ¥{new_amount:,.0f}\n"
-                                f"本次加仓 ¥{add_amount:,.0f}（约 {add_amount/latest_nav:.0f} 份）")
+                                f"本次加仓 ¥{add_amount:,.0f}")
 
     def _sync_reduce(self):
-        """同步减仓：减少持有金额"""
-        if not self.current_summary:
-            QMessageBox.information(self, "提示", "请先加载基金数据。")
+        """同步减仓：直接减少持有金额"""
+        if not self.current_code:
+            QMessageBox.information(self, "提示", "请先在左侧选择一只基金。")
             return
-        code = self.current_code
-        if not code:
-            return
-        pos_data = self.store.load_position(code)
-        if not pos_data:
-            QMessageBox.information(self, "提示", "请先填写持仓信息并点击「同步到分析」。")
-            return
-
-        from src.strategy.advisor import Position
-        pos = Position(
-            shares=pos_data.get("shares", 0),
-            cost=pos_data.get("cost", 0),
-            base_amount=pos_data.get("base_amount", 1000),
-        )
-        result = self.advisor.evaluate(self.current_summary, pos, None, "")
-
-        reduce_amount = result.grid_action_amount if (result.grid_signal == "卖出" and result.grid_action_amount > 0) else 0
-        if reduce_amount <= 0:
-            # 无网格信号时，按持仓的 10% 减仓
-            reduce_amount = (float(self.edit_amount.text() or 0)) * 0.1
 
         current_amount = float(self.edit_amount.text() or 0)
         if current_amount <= 0:
             QMessageBox.information(self, "提示", "当前无持仓金额，无法减仓。")
             return
 
-        new_amount = max(0, current_amount - reduce_amount)
+        reduce_amount, ok = QInputDialog.getDouble(
+            self, "同步减仓", "请输入减仓金额（元）：",
+            min(1000, current_amount), 0, current_amount, 2,
+        )
+        if not ok or reduce_amount <= 0:
+            return
+
+        new_amount = current_amount - reduce_amount
         # 按比例调整收益
         if current_amount > 0:
             profit = float(self.edit_profit.text() or 0)
-            profit = profit * (new_amount / current_amount)
+            profit = profit * (new_amount / current_amount) if new_amount > 0 else 0
             self.edit_profit.setText(f"{profit:.2f}")
 
         self.edit_amount.setText(f"{new_amount:.2f}")
@@ -939,45 +1254,189 @@ class MainWindow(QMainWindow):
                                 f"本次减仓 ¥{reduce_amount:,.0f}")
 
     def _sync_dca(self):
-        """同步定投：按定投基准增加持有金额"""
-        if not self.current_summary:
-            QMessageBox.information(self, "提示", "请先加载基金数据。")
-            return
-        code = self.current_code
-        if not code:
-            return
-        pos_data = self.store.load_position(code)
-        if not pos_data:
-            QMessageBox.information(self, "提示", "请先填写持仓信息并点击「同步到分析」。")
+        """同步定投：弹出定投设置对话框，直接增加持有金额"""
+        if not self.current_code:
+            QMessageBox.information(self, "提示", "请先在左侧选择一只基金。")
             return
 
-        from src.strategy.advisor import Position
-        pos = Position(
-            shares=pos_data.get("shares", 0),
-            cost=pos_data.get("cost", 0),
-            base_amount=pos_data.get("base_amount", 1000),
-        )
-        result = self.advisor.evaluate(self.current_summary, pos, None, "")
+        pos_data = self.store.load_position(self.current_code) or {}
+        base = pos_data.get("base_amount", 1000)
 
-        dca_amount = result.suggested_amount if result.multiplier > 0 else 0
-        if dca_amount <= 0 and result.multiplier > 0:
-            dca_amount = pos.base_amount * result.multiplier
-        if dca_amount <= 0:
-            QMessageBox.information(self, "提示",
-                                    f"当前高估区域（{result.pe_tier_label}），建议暂停定投。\n"
-                                    "可将资金转入货币基金等待机会。")
+        dialog = DCADialog(current_base=base, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
+        dca_amount, freq = dialog.get_result()
+
+        freq_label = {"daily": "每天", "weekly": "每周", "monthly": "每月"}.get(freq, freq)
+
+        # 更新定投基准和频率到编辑框
+        self.edit_base.setText(f"{dca_amount:.0f}")
+
+        # 保存定投频率配置
+        old_pos = self.store.load_position(self.current_code) or {}
+        old_pos["dca_freq"] = freq
+        self.store.save_position(self.current_code, old_pos)
+
+        # 增加本期定投金额到持仓
         current_amount = float(self.edit_amount.text() or 0)
         new_amount = current_amount + dca_amount
         self.edit_amount.setText(f"{new_amount:.2f}")
         self._save_position()
 
-        latest_nav = self.current_summary.get("最新净值", 1)
         QMessageBox.information(self, "定投完成",
-                                f"持有金额 ¥{current_amount:,.0f} → ¥{new_amount:,.0f}\n"
-                                f"本期定投 ¥{dca_amount:,.0f}（{result.multiplier}x 基准）"
-                                f" 约 {dca_amount/latest_nav:.0f} 份")
+                                f"定投频率: {freq_label}\n"
+                                f"持仓金额 ¥{current_amount:,.0f} → ¥{new_amount:,.0f}\n"
+                                f"本期定投 ¥{dca_amount:,.0f}")
+
+    def _on_page_changed(self, index: int):
+        """切换到账户汇总时自动刷新"""
+        if index == 0:  # 账户汇总页
+            self._refresh_account_summary()
+
+    def _refresh_account_summary(self):
+        """刷新账户汇总表（后台线程，不卡 UI）"""
+        if not self.funds:
+            return  # 无自选基金，静默跳过
+
+        if self._summary_loading:
+            return  # 防止重复加载
+
+        self._summary_loading = True
+        self.status_time.setText("正在获取板块和重仓数据...")
+
+        # 先填充基础数据（无需网络），让表格立即可见
+        self._render_account_summary({}, {})
+
+        # 后台线程加载板块和重仓数据
+        self.summary_thread = SummaryFetchThread(self.funds)
+        self.summary_thread.finished.connect(self._on_summary_data_ready)
+        self.summary_thread.start()
+
+    def _on_summary_data_ready(self, sector_map: dict, fund_holdings_map: dict, stock_changes: dict):
+        """后台数据就绪，渲染完整表格"""
+        self._summary_loading = False
+        self._render_account_summary(sector_map, fund_holdings_map, stock_changes)
+        self.status_time.setText(f"账户汇总已更新 — {datetime.now().strftime('%H:%M:%S')}")
+
+    def _render_account_summary(self, sector_map: dict, fund_holdings_map: dict, stock_changes: dict = None):
+        """渲染账户汇总表格（仅显示持有金额 > 0 的基金）"""
+        if stock_changes is None:
+            stock_changes = {}
+
+        # 筛选有持仓的基金
+        held = []
+        for fund in self.funds:
+            pos = self.store.load_position(fund["code"])
+            shares = pos.get("shares", 0)
+            if shares <= 0:
+                continue
+            nav = 0
+            if self.store.exists(fund["code"]):
+                try:
+                    df = self.store.load(fund["code"])
+                    if not df.empty:
+                        nav = df.iloc[-1]["单位净值"]
+                except Exception:
+                    pass
+            amount = shares * nav
+            if amount <= 0:
+                continue
+            held.append((fund, pos, nav))
+
+        table = self.summary_table
+        table.setRowCount(len(held))
+
+        total_amount = 0
+        total_profit = 0
+        total_daily = 0
+
+        for row, (fund, pos, nav) in enumerate(held):
+            code = fund["code"]
+            name = simplify_fund_name(fund["name"])
+
+            daily_pct = 0
+            if nav > 0 and self.store.exists(code):
+                try:
+                    df = self.store.load(code)
+                    if not df.empty:
+                        daily_pct = float(df.iloc[-1]["日增长率"]) if "日增长率" in df.columns else 0
+                except Exception:
+                    pass
+
+            shares = pos.get("shares", 0)
+            cost = pos.get("cost", 0)
+            amount = shares * nav if nav > 0 else 0
+            profit_amt = shares * (nav - cost) if nav > 0 and shares > 0 else 0
+            profit_pct = ((nav - cost) / cost * 100) if cost > 0 and nav > 0 else 0
+            daily_amt = amount * daily_pct / 100 if amount > 0 else 0
+
+            total_amount += amount
+            total_profit += profit_amt
+            total_daily += daily_amt
+
+            sector = self.fetcher.guess_fund_sector(fund["name"])
+            sector_change = sector_map.get(sector, 0) if sector else 0
+
+            hld_avg = None
+            holdings = fund_holdings_map.get(code, {})
+            if holdings:
+                hld_weighted = 0
+                hld_total_weight = 0
+                for s in holdings.get("stocks", []):
+                    sc = stock_changes.get(s["code"], 0)
+                    hld_weighted += sc * s["weight"]
+                    hld_total_weight += s["weight"]
+                hld_avg = round(hld_weighted / hld_total_weight, 2) if hld_total_weight > 0 else None
+
+            # 是否还在加载中
+            loading = not bool(sector_map or fund_holdings_map)
+
+            def make_item(text, color="#2c3e50", bold=False):
+                item = QTableWidgetItem(str(text))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setForeground(QColor(color))
+                if bold:
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                return item
+
+            table.setItem(row, 0, make_item(f"{name}\n{code}", "#2c3e50", True))
+            table.setItem(row, 1, make_item(f"¥{amount:,.0f}" if amount > 0 else "—"))
+
+            p_color = "#e74c3c" if profit_amt >= 0 else "#27ae60"
+            table.setItem(row, 2, make_item(f"¥{profit_amt:+,.0f}" if shares > 0 else "—", p_color))
+            table.setItem(row, 3, make_item(f"{profit_pct:+.2f}%" if cost > 0 else "—", p_color))
+
+            d_color = "#e74c3c" if daily_pct >= 0 else "#27ae60"
+            table.setItem(row, 4, make_item(f"¥{daily_amt:+,.0f}" if amount > 0 else "—", d_color))
+            table.setItem(row, 5, make_item(f"{daily_pct:+.2f}%" if daily_pct != 0 else "—", d_color))
+
+            if loading:
+                table.setItem(row, 6, make_item("加载中...", "#95a5a6"))
+                table.setItem(row, 7, make_item("...", "#95a5a6"))
+                table.setItem(row, 8, make_item("...", "#95a5a6"))
+            else:
+                table.setItem(row, 6, make_item(sector or "—", "#7f8c8d" if not sector else "#2c3e50"))
+                sc_color = "#e74c3c" if sector_change >= 0 else "#27ae60"
+                table.setItem(row, 7, make_item(f"{sector_change:+.2f}%" if sector else "—", sc_color if sector else "#95a5a6"))
+
+                if hld_avg is not None:
+                    hld_color = "#e74c3c" if hld_avg >= 0 else "#27ae60"
+                    table.setItem(row, 8, make_item(f"{hld_avg:+.2f}%", hld_color))
+                else:
+                    table.setItem(row, 8, make_item("—", "#95a5a6"))
+
+            table.setRowHeight(row, 52)
+
+        self.total_amount_label.setText(f"总持仓: ¥{total_amount:,.0f}")
+        tp_color = "#e74c3c" if total_profit >= 0 else "#27ae60"
+        self.total_profit_label.setText(f"总收益: ¥{total_profit:+,.0f}")
+        self.total_profit_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {tp_color}; padding: 4px 8px;")
+        td_color = "#e74c3c" if total_daily >= 0 else "#27ae60"
+        self.total_daily_label.setText(f"今日收益: ¥{total_daily:+,.0f}")
+        self.total_daily_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {td_color}; padding: 4px 8px;")
 
     def _update_advice(self, summary: dict):
         """用科学模型更新投资建议"""
@@ -1032,7 +1491,7 @@ class MainWindow(QMainWindow):
             self.ops_grid_label.setText(result.grid_signal if result.grid_signal else "未触发 | 输入成本后生效")
 
         if result.position_value > 0:
-            color = "🔴" if result.profit_loss < 0 else "🟢"
+            color = "🔴" if result.profit_loss >= 0 else "🟢"
             self.ops_position_label.setText(
                 f"市值 ¥{result.position_value:,.0f} | {color} ¥{result.profit_loss:+,.0f}（{result.profit_loss_pct:+.1f}%）"
             )
@@ -1123,6 +1582,8 @@ class MainWindow(QMainWindow):
             return
 
         del self.funds[row]
+        if row < len(self._fund_widgets):
+            del self._fund_widgets[row]
         self.store.save_watchlist(self.funds)
         self.fund_list.takeItem(row)
         if self.funds and row >= len(self.funds):

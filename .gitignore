@@ -1,5 +1,5 @@
 # 虚拟环境
-XFund_venv/
+venv/
 
 # Python
 __pycache__/

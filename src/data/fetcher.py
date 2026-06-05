@@ -86,3 +86,146 @@ class FundFetcher:
     def get_all_funds() -> pd.DataFrame:
         """获取全市场基金列表"""
         return ak.fund_name_em()
+
+    @staticmethod
+    def get_fund_holdings(symbol: str, year: str = "2025") -> dict:
+        """
+        获取基金前十大重仓股及占比
+
+        Returns:
+            {"stocks": [{"code": "600519", "name": "贵州茅台", "weight": 9.5}, ...],
+             "total_weight": 65.2}
+        """
+        try:
+            df = ak.fund_portfolio_hold_em(symbol=symbol, date=year)
+            if df.empty:
+                return {"stocks": [], "total_weight": 0}
+
+            # 列名可能是中文，取前10行
+            cols = list(df.columns)
+            code_col = next((c for c in cols if "代码" in str(c)), cols[0])
+            name_col = next((c for c in cols if "名称" in str(c)), cols[1]) if len(cols) > 1 else cols[1]
+            weight_col = next((c for c in cols if "占净" in str(c) or "比例" in str(c)), cols[-1])
+
+            stocks = []
+            total = 0
+            for _, row in df.head(10).iterrows():
+                try:
+                    code = str(row[code_col]).strip().zfill(6)
+                    name = str(row[name_col]).strip()
+                    weight = float(row[weight_col])
+                    stocks.append({"code": code, "name": name, "weight": weight})
+                    total += weight
+                except (ValueError, KeyError):
+                    continue
+
+            return {"stocks": stocks, "total_weight": round(total, 1)}
+        except Exception:
+            return {"stocks": [], "total_weight": 0}
+
+    @staticmethod
+    def get_stock_daily_change(stock_codes: list) -> dict:
+        """
+        批量获取股票当日涨跌幅
+
+        Returns:
+            {"600519": 2.35, "000858": -1.20, ...}
+        """
+        result = {}
+        if not stock_codes:
+            return result
+        try:
+            df = ak.stock_zh_a_spot_em()
+            if df.empty:
+                return result
+            code_col = df.columns[1]  # 代码列
+            change_col = df.columns[df.columns.get_loc("涨跌幅")] if "涨跌幅" in df.columns else None
+            if change_col is None:
+                for c in df.columns:
+                    if "涨跌" in str(c):
+                        change_col = c
+                        break
+            if change_col is None:
+                return result
+
+            df[code_col] = df[code_col].astype(str).str.strip()
+            for code in stock_codes:
+                match = df[df[code_col] == code]
+                if not match.empty:
+                    try:
+                        result[code] = float(match.iloc[0][change_col])
+                    except (ValueError, TypeError):
+                        result[code] = 0
+        except Exception:
+            pass
+        return result
+
+    @staticmethod
+    def get_sector_performance() -> dict:
+        """
+        获取各行业板块当日涨跌幅
+
+        Returns:
+            {"白酒": 1.35, "半导体": -0.80, ...}
+        """
+        result = {}
+        try:
+            df = ak.stock_board_industry_name_em()
+            if df.empty:
+                return result
+            name_col = df.columns[0] if "名称" in str(df.columns[0]) else df.columns[1]
+            change_col = None
+            for c in df.columns:
+                if "涨跌幅" in str(c):
+                    change_col = c
+                    break
+            if change_col is None:
+                for c in df.columns:
+                    if "涨跌" in str(c):
+                        change_col = c
+                        break
+            if change_col is None:
+                return result
+
+            for _, row in df.iterrows():
+                try:
+                    name = str(row[name_col]).strip()
+                    change = float(row[change_col])
+                    result[name] = change
+                except (ValueError, KeyError):
+                    continue
+        except Exception:
+            pass
+        return result
+
+    @staticmethod
+    def guess_fund_sector(fund_name: str) -> str:
+        """根据基金名称推测关联板块"""
+        keywords = {
+            "白酒": "白酒", "酒": "酿酒行业",
+            "医疗": "医疗器械", "医药": "医药制造", "健康": "医疗行业",
+            "科技": "半导体", "半导体": "半导体", "芯片": "半导体",
+            "新能源": "新能源", "光伏": "光伏设备", "锂电": "电池",
+            "消费": "商业百货", "食品": "食品饮料", "饮料": "食品饮料",
+            "军工": "航天航空", "国防": "航天航空",
+            "证券": "证券", "券商": "证券",
+            "银行": "银行",
+            "保险": "保险",
+            "地产": "房地产", "房地产": "房地产",
+            "汽车": "汽车整车", "新能源车": "汽车整车",
+            "互联网": "互联网服务", "计算机": "互联网服务",
+            "传媒": "文化传媒", "影视": "文化传媒",
+            "农业": "农牧饲渔", "养殖": "农牧饲渔",
+            "黄金": "贵金属", "有色": "有色金属", "钢铁": "钢铁行业",
+            "煤炭": "煤炭行业", "石油": "石油行业",
+            "电力": "电力行业", "基建": "工程建设",
+            "环保": "环保行业", "碳中和": "环保行业",
+            "物流": "物流行业", "旅游": "旅游酒店",
+            "通信": "通信设备", "5G": "通信设备",
+            "人工智能": "互联网服务", "AI": "互联网服务",
+            "机器人": "专用设备",
+        }
+        for kw, sector in keywords.items():
+            if kw in fund_name:
+                return sector
+        return ""
