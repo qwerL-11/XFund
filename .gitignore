@@ -1,0 +1,7 @@
+# 虚拟环境
+XFund/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
