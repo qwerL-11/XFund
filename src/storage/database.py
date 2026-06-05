@@ -51,3 +51,24 @@ class DataStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, FileNotFoundError):
             return []
+
+    def save_position(self, code: str, pos: dict) -> None:
+        """保存持仓数据"""
+        path = self.data_dir / "positions.json"
+        all_pos = self.load_all_positions()
+        all_pos[code] = pos
+        path.write_text(json.dumps(all_pos, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_position(self, code: str) -> dict:
+        """加载单只基金持仓"""
+        return self.load_all_positions().get(code, {})
+
+    def load_all_positions(self) -> dict:
+        """加载全部持仓"""
+        path = self.data_dir / "positions.json"
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}

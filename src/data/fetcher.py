@@ -13,6 +13,15 @@ import pandas as pd
 class FundFetcher:
     """基金数据获取器"""
 
+    _fund_list_cache = None  # 全量基金列表缓存
+
+    @classmethod
+    def _get_fund_list(cls) -> pd.DataFrame:
+        """获取全量基金列表（带缓存）"""
+        if cls._fund_list_cache is None:
+            cls._fund_list_cache = ak.fund_name_em()
+        return cls._fund_list_cache
+
     @staticmethod
     def get_fund_nav(symbol: str, start_date: Optional[str] = None) -> pd.DataFrame:
         """
@@ -50,23 +59,21 @@ class FundFetcher:
 
         return df
 
-    @staticmethod
-    def get_fund_info(symbol: str) -> dict:
-        """
-        获取基金基本信息
-
-        Args:
-            symbol: 基金代码
-
-        Returns:
-            dict: 基金名称、类型、规模、基金经理等
-        """
+    @classmethod
+    def get_fund_info(cls, symbol: str) -> dict:
+        """获取基金简称（含 A/C）"""
         try:
-            df = ak.fund_individual_basic_info_xq(symbol=symbol)
-            if df.empty:
+            df = cls._get_fund_list()
+            cols = list(df.columns)
+            match = df[df[cols[0]].astype(str) == symbol]
+            if match.empty:
                 return {}
-            info = dict(zip(df["item"], df["value"]))
-            return info
+            row = match.iloc[0]
+            return {
+                "基金代码": str(row[cols[0]]),
+                "基金简称": str(row[cols[2]]) if len(cols) > 2 else str(row[cols[0]]),
+                "基金类型": str(row[cols[3]]) if len(cols) > 3 else "",
+            }
         except Exception:
             return {}
 
