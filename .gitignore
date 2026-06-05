@@ -1,7 +1,27 @@
 # 虚拟环境
-XFund/
+XFund_venv/
 
 # Python
 __pycache__/
 *.py[cod]
 *.so
+
+# 本地数据
+data/*.csv
+
+# 日志
+logs/*.log
+
+# 环境变量
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/
+
+# OS
+.DS_Store
+Thumbs.db
